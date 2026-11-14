@@ -1,5 +1,5 @@
 """ClipForge AI free backend. Uses local faster-whisper + FFmpeg; no paid AI API."""
-import os, json, uuid, subprocess, threading, shutil, zipfile, re, math, datetime, importlib.util
+import gc, os, json, uuid, subprocess, threading, shutil, zipfile, re, math, datetime, importlib.util
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, send_from_directory, abort
 
@@ -129,7 +129,7 @@ def process(pid):
         for x in seg_iter:
             t = (x.text or "").strip()
             if t: segs.append({"s": float(x.start), "e": float(x.end), "t": t})
-        del model
+        del model; gc.collect()  # free RAM before rendering
         if not segs: raise RuntimeError("No speech detected. Try a video with clear spoken audio.")
         lang = (getattr(info, "language", "") or "").lower()
         mutate(pid, lambda q: q.update(segments=segs, lang=lang))
@@ -185,7 +185,7 @@ def render_clip(pid, cid):
             f = max(0.0, min(1.0, float(c.get("focus", .5))))
             vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}:(iw-{W})*{f}:(ih-{H})/2,ass={cid}.ass"
             sh(["ffmpeg", "-y", "-ss", str(c["start"]), "-i", str(src_of(pid).resolve()), "-t", str(c["end"] - c["start"]),
-                "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+                "-threads", "2", "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", f"{cid}.mp4"], cwd=cd)
             setr(status="done", file=f"{cid}.mp4", res=st["res"], size=(cd / f"{cid}.mp4").stat().st_size)
     except Exception as ex:
@@ -318,6 +318,7 @@ def recover():  # jobs interrupted by a restart
             if ch: f.write_text(json.dumps(p))
         except Exception: pass
 
+recover()  # also runs under gunicorn, so stuck jobs reset after a restart
+
 if __name__ == "__main__":
-    recover()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8000")), threaded=True)
